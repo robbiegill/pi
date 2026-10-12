@@ -45,7 +45,10 @@ export async function openChat(
 	storage: Storage,
 	setup: ChatSetup,
 	/** One environment for every conversation, or an `env` function. */
-	options: { readonly env?: ExecutionEnv | NonNullable<HarnessOptions["env"]> } = {},
+	options: {
+		readonly env?: ExecutionEnv | NonNullable<HarnessOptions["env"]>;
+		readonly viewDocs?: HarnessOptions["viewDocs"];
+	} = {},
 ): Promise<{ readonly harness: Harness; readonly root: Conversation }> {
 	const harness = await Harness.open(
 		storage,
@@ -56,6 +59,7 @@ export async function openChat(
 			...(options.env === undefined
 				? {}
 				: { env: typeof options.env === "function" ? options.env : () => options.env as ExecutionEnv }),
+			...(options.viewDocs === undefined ? {} : { viewDocs: options.viewDocs }),
 			now: () => setup.now(),
 			onReport: (error) => setup.reports.push(error),
 		},

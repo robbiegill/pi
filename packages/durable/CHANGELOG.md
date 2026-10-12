@@ -13,6 +13,7 @@
 
 ### Added
 
+- `HarnessOptions.viewDocs`: conversation singleton documents a host mounts in `ConversationView.docs`, after the built-in ones. They hydrate with the view and advance in the same frame as the entries of each commit, appearing, retiring, and changing incarnation or version as the built-in ones do, instead of arriving on separate `watchDoc()` streams. `Harness.open()` rejects families, Session and task documents, built-in kinds, and repeated kinds.
 - Optional `ExecutionEnv.listFiles(path, options, context)` for bounded, gitignore-aware tree listings (`ListFilesOptions`, `FileListing`, `FileListEntry`); `registerEnvConformance` takes a `listFiles` option to cover it.
 - Input submissions take `entry: { kind, data }` (`InputEntry`): the input is placed as an entry of that kind carrying that data, with its content as the user message, instead of `pi.user`, and behaves as any other input; the kind must not start with `pi.`. Queued inputs carry it in their `pi.inbox` item ([#10407](https://github.com/earendil-works/pi/issues/10407)).
 - `Session.closed` settles once the Session has closed, Storage included: `{ reason: "closed" }` after `close()`, or `{ reason: "failed", error }` after a storage error. `WatchEnd` gains `{ reason: "session_failed", error }`, and the README has an Errors section.

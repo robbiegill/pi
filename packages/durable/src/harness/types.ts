@@ -16,6 +16,7 @@ import type {
 } from "@earendil-works/pi-ai";
 import type { ExecutionEnv, ShellOutputSkip, ShellOutputWindow } from "../env/index.ts";
 import type {
+	ConversationDocToken,
 	ConversationId,
 	ConversationOwnership,
 	ConversationRecord,
@@ -586,6 +587,11 @@ export type HarnessOptions<Tool extends ToolRegistration = ToolRegistration> = {
 	 * Table reads throw `ReadAfterWrite`, as in `init`; a throw fails the creating commit.
 	 */
 	readonly conversationCreated?: (tx: Tx, conversation: ConversationRecord) => void | Promise<void>;
+	/**
+	 * Conversation singleton documents mounted in `ConversationView.docs` after the built-in ones, and advanced in the
+	 * same frames. A family, a non-conversation document, a built-in kind, or a kind listed twice fails `Harness.open()`.
+	 */
+	readonly viewDocs?: readonly ConversationDocToken<JsonObject>[];
 	readonly now?: () => number;
 	/**
 	 * Receives failures that do not fail the calling operation, such as a throwing hook or listener, and the error that
