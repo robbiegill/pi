@@ -643,7 +643,15 @@ await root.commit(async (tx) => {
 console.log(await harness.snapshot(Todos, root.id, context));
 ```
 
-`harness.watchDoc()` and `harness.documentState()` observe one document like the view above. `HarnessOptions.conversationCreated(tx, conversation)` runs in every commit that creates or forks a conversation, including a tool's raw `tx.createConversation()`, so every conversation gets your documents; `init` in `createConversation()`, `fork()`, and `root()` writes per-call data in the same commit. An extension's tools, sections, and hooks read their own documents through `api` or `input.read`, and treat an absent one as its default ([`11-extension-state.ts`](test/examples/11-extension-state.ts)).
+To show a conversation document in the view, list it in `HarnessOptions.viewDocs`. It is mounted at `docs[kind]` after the built-in documents and advances in the same frames as the entries, so a client applies one ordered stream; a document that does not exist yet is absent, and appears with a set of its whole value when a commit creates it:
+
+```typescript
+const harness = await Harness.open(storage, { models, registry, viewDocs: [Todos] }, context);
+const watch = await root.watch(context);
+watch.value.docs["app.todos"]; // { items: [...] }, or undefined until it exists
+```
+
+Only conversation singletons can be listed; a family, a Session or task document, a built-in kind, or a kind listed twice fails `Harness.open()`. `harness.watchDoc()` and `harness.documentState()` observe one document on its own, ordered only with its own commits; use them for Session and task documents, family members, and documents a client should not receive with every view. `HarnessOptions.conversationCreated(tx, conversation)` runs in every commit that creates or forks a conversation, including a tool's raw `tx.createConversation()`, so every conversation gets your documents; `init` in `createConversation()`, `fork()`, and `root()` writes per-call data in the same commit. An extension's tools, sections, and hooks read their own documents through `api` or `input.read`, and treat an absent one as its default ([`11-extension-state.ts`](test/examples/11-extension-state.ts)).
 
 ## Usage and Cost
 

@@ -52,7 +52,7 @@ import type {
 } from "./types.ts";
 import { addUsageState, UsageDoc, type UsageState } from "./usage.ts";
 import { scanAll } from "./util.ts";
-import { type ConversationView, ConversationViews } from "./view.ts";
+import { type ConversationView, ConversationViews, checkViewDocs } from "./view.ts";
 
 const SCAN_PAGE_SIZE = 256;
 
@@ -209,7 +209,7 @@ class HarnessImpl<Tool extends ToolRegistration> extends SessionImpl implements 
 			storage,
 			tasks: this.#tasks,
 			submissions: this.#submissions,
-			views: new ConversationViews(this, storage),
+			views: new ConversationViews(this, storage, options.viewDocs),
 			now,
 			create: (target, createOptions, context) => this.#create(target, createOptions, context),
 		};
@@ -456,6 +456,7 @@ export const Harness = {
 			const names = missing.map((task) => task.definition.name).join(", ");
 			throw new Error(`Registry lacks built-in tasks ${names}; create it with createRegistry()`);
 		}
+		checkViewDocs(options.viewDocs ?? []);
 		const harness = new HarnessImpl(storage, options, context);
 		try {
 			await harness.openTasks(context);

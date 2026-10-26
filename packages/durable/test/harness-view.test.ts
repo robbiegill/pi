@@ -5,7 +5,9 @@ import {
 	type Conversation,
 	type ConversationView,
 	defineDoc,
+	defineDocFamily,
 	type Harness,
+	type HarnessOptions,
 	InboxDoc,
 	LiveDoc,
 	MemoryStorage,
@@ -349,5 +351,150 @@ describe("conversation view", () => {
 		expect(replay(initial, frames)).toEqual(await committed(harness, root, initial.conversation));
 		await stop();
 		await harness.close(context);
+	});
+});
+
+describe("host view documents", () => {
+	const Files = defineDoc<{ files: string[] }>({
+		kind: "app.files",
+		version: 1,
+		scope: "conversation",
+		history: "latest",
+		fork: "current",
+		initial: () => ({ files: [] }),
+	});
+	const FilesV2 = defineDoc<{ files: string[]; v2: true }>({
+		kind: "app.files",
+		version: 2,
+		scope: "conversation",
+		history: "latest",
+		fork: "current",
+		initial: () => ({ files: [], v2: true }),
+		migrate: (value) => ({ files: value.files as string[], v2: true }),
+	});
+	const Approvals = defineDoc<{ pending: number }>({
+		kind: "app.approvals",
+		version: 1,
+		scope: "conversation",
+		history: "rewindable",
+		fork: "initial",
+		initial: () => ({ pending: 0 }),
+	});
+	const viewDocs = [Files, Approvals];
+
+	it("hydrates registered documents that exist, after the built-in ones", async () => {
+		const storage = new MemoryStorage();
+		const { harness, root } = await openChat(storage, chatSetup(), { viewDocs });
+		await root.commit(async (tx) => {
+			(await tx.doc(Files, root.id)).files.push("a.txt");
+		}, context);
+		const { initial, stop } = await record(root);
+		expect(Object.keys(initial.docs)).toEqual([
+			"pi.agent",
+			"pi.live",
+			"pi.inbox",
+			"pi.provider",
+			"pi.usage",
+			"app.files",
+		]);
+		expect(initial.docs["app.files"]).toEqual({ files: ["a.txt"] });
+		expect(await fresh(root)).toEqual(initial);
+		await stop();
+		await harness.close(context);
+	});
+
+	it("mounts a created document whole and moves its updates under its path in the commit's one frame", async () => {
+		const { harness, root } = await openChat(new MemoryStorage(), chatSetup(), { viewDocs });
+		const { initial, frames, stop } = await record(root);
+		expect(initial.docs["app.files"]).toBeUndefined();
+		await root.commit(async (tx) => {
+			(await tx.doc(Files, root.id)).files.push("a.txt");
+		}, context);
+		await root.commit(async (tx) => {
+			await tx.appendEntry(root.id, { kind: "upload" });
+			(await tx.doc(Files, root.id)).files.push("b.txt");
+			(await tx.doc(Approvals, root.id)).pending = 1;
+		}, context);
+		await drained();
+		expect(frames).toHaveLength(2);
+		expect(frames[0]!.ops).toEqual([["s", ["docs", "app.files"], { files: ["a.txt"] }]]);
+		expect(frames[1]!.ops).toContainEqual(["s", ["docs", "app.approvals"], { pending: 1 }]);
+		expect(frames[1]!.ops).toContainEqual(["p", ["entries"], 0, 0, [expect.objectContaining({ kind: "upload" })]]);
+		expect(frames[1]!.ops).toContainEqual(["p", ["docs", "app.files", "files"], 1, 0, ["b.txt"]]);
+		expect(replay(initial, frames)).toEqual(await fresh(root));
+		expect(frames[1]!.value.docs["app.files"]).toEqual({ files: ["a.txt", "b.txt"] });
+		await stop();
+		await harness.close(context);
+	});
+
+	it("unmounts a retired document and mounts its recreation or a new version whole", async () => {
+		const { harness, root } = await openChat(new MemoryStorage(), chatSetup(), { viewDocs });
+		await root.commit(async (tx) => {
+			(await tx.doc(Files, root.id)).files.push("a.txt");
+		}, context);
+		const { initial, frames, stop } = await record(root);
+		await root.commit((tx) => tx.retireDoc(Files, root.id), context);
+		await root.commit(async (tx) => {
+			(await tx.doc(Files, root.id)).files.push("b.txt");
+		}, context);
+		await root.commit(async (tx) => {
+			(await tx.doc(FilesV2, root.id)).files.push("c.txt");
+		}, context);
+		await drained();
+		expect(frames.map((frame) => frame.ops)).toEqual([
+			[["d", ["docs", "app.files"]]],
+			[["s", ["docs", "app.files"], { files: ["b.txt"] }]],
+			[["s", ["docs", "app.files"], { files: ["b.txt", "c.txt"], v2: true }]],
+		]);
+		expect(frames[0]!.value.docs["app.files"]).toBeUndefined();
+		replay(initial, frames);
+		await stop();
+		await harness.close(context);
+	});
+
+	it("never mounts a document that is not registered", async () => {
+		const { harness, root } = await openChat(new MemoryStorage(), chatSetup(), { viewDocs: [Files] });
+		await root.commit(async (tx) => {
+			(await tx.doc(Approvals, root.id)).pending = 1;
+		}, context);
+		const { initial, frames, stop } = await record(root);
+		await root.commit(async (tx) => {
+			(await tx.doc(Approvals, root.id)).pending = 2;
+		}, context);
+		await drained();
+		expect(initial.docs["app.approvals"]).toBeUndefined();
+		expect(frames).toEqual([]);
+		await stop();
+		await harness.close(context);
+	});
+
+	it("rejects registrations that are not conversation singletons, reuse a built-in kind, or repeat a kind", async () => {
+		const doc = { version: 1, initial: () => ({}) };
+		const invalid = [
+			[defineDoc({ ...doc, kind: "app.session", scope: "session" })],
+			[defineDoc({ ...doc, kind: "app.task", scope: "task" })],
+			[
+				defineDocFamily({
+					...doc,
+					kind: "app.family",
+					scope: "conversation",
+					history: "latest",
+					fork: "current",
+					family: true,
+				}),
+			],
+			[defineDoc({ ...doc, kind: "pi.live", scope: "conversation", history: "latest", fork: "current" })],
+			[Files, FilesV2],
+		] as unknown as NonNullable<HarnessOptions["viewDocs"]>[];
+		const messages = [
+			"View document app.session must be a conversation singleton document",
+			"View document app.task must be a conversation singleton document",
+			"View document app.family must be a conversation singleton document",
+			"View document pi.live is a built-in mounted document",
+			"View document app.files is listed twice",
+		];
+		for (const [index, docs] of invalid.entries()) {
+			await expect(openChat(new MemoryStorage(), chatSetup(), { viewDocs: docs })).rejects.toThrow(messages[index]);
+		}
 	});
 });

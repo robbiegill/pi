@@ -1,6 +1,7 @@
 import { type AttachedReplicatedState, type Context, type JsonValue, replicatedState } from "@earendil-works/chord";
 import { withoutAbortSignal } from "@earendil-works/chord/context";
 import { applyImmutable, type NonEmptyPath, type Op, type Path } from "@earendil-works/chord/delta";
+import type { AnyDocToken } from "../documents.ts";
 import { CommittedStateSource, CommittedWatch } from "../session/observation.ts";
 import { contained, type SessionImpl } from "../session/session.ts";
 import type {
@@ -22,12 +23,12 @@ import { ProviderDoc } from "./provider.ts";
 import { UsageDoc } from "./usage.ts";
 import { closedError } from "./util.ts";
 
-/** Structural mount of one conversation's active transcript and built-in documents (spec §9.3). */
+/** Structural mount of one conversation's active transcript and mounted documents (spec §9.3). */
 export type ConversationView = {
 	readonly conversation: ConversationRecord;
 	/** Raw active entries, as `ContextView.entries`: the head marker, then the non-head entries from its head. */
 	readonly entries: readonly EntryRecord[];
-	/** Built-in conversation documents keyed by kind; absent documents are absent. */
+	/** The built-in conversation documents and `HarnessOptions.viewDocs`, keyed by kind; absent documents are absent. */
 	readonly docs: Readonly<Record<string, JsonObject>>;
 };
 
@@ -54,6 +55,20 @@ const MOUNTED = [
 ] as unknown as readonly ConversationDocToken<JsonObject>[];
 const MOUNTED_KINDS: ReadonlySet<string> = new Set(MOUNTED.map((token) => token.definition.kind));
 
+/** Check `HarnessOptions.viewDocs`: conversation singletons, each kind once and none a built-in one. */
+export function checkViewDocs(tokens: readonly ConversationDocToken<JsonObject>[]): void {
+	const kinds = new Set<string>();
+	for (const { definition } of tokens as readonly AnyDocToken[]) {
+		const kind = definition.kind;
+		if (definition.scope !== "conversation" || definition.family === true) {
+			throw new TypeError(`View document ${kind} must be a conversation singleton document`);
+		}
+		if (MOUNTED_KINDS.has(kind)) throw new Error(`View document ${kind} is a built-in mounted document`);
+		if (kinds.has(kind)) throw new Error(`View document ${kind} is listed twice`);
+		kinds.add(kind);
+	}
+}
+
 /** One conversation's mount: its current revision, the document incarnations it shows, and its observers. */
 type Mount = {
 	value: ConversationView;
@@ -79,15 +94,19 @@ export class ConversationViews {
 	readonly #session: SessionImpl;
 	readonly #storage: Storage;
 	readonly #mounts = new Map<ConversationId, Mount>();
+	/** The built-in documents, then the host's. */
+	readonly #mounted: readonly ConversationDocToken<JsonObject>[];
 	#closed = false;
 
-	constructor(session: SessionImpl, storage: Storage) {
+	constructor(session: SessionImpl, storage: Storage, viewDocs: readonly ConversationDocToken<JsonObject>[] = []) {
 		this.#session = session;
 		this.#storage = storage;
+		this.#mounted = [...MOUNTED, ...viewDocs];
+		const kinds: ReadonlySet<string> = new Set(this.#mounted.map((token) => token.definition.kind));
 		VIEWS.set(session, this);
 		session.observeCommits((publication, context) => {
 			for (const [id, mount] of this.#mounts)
-				advance(id, mount, publication, context, (error) => this.report(error));
+				advance(id, mount, kinds, publication, context, (error) => this.report(error));
 		});
 		session.subscribeClose(() => {
 			this.#closed = true;
@@ -172,7 +191,7 @@ export class ConversationViews {
 		const entries = await activeEntries(this.#storage, id, bounds, context);
 		const docs: Record<string, JsonObject> = {};
 		const incarnations = new Map<string, { id: DocumentId; version: number }>();
-		for (const token of MOUNTED) {
+		for (const token of this.#mounted) {
 			const loaded = await this.#session.conversationDocumentOnLine(token, id, context);
 			if (loaded === undefined) continue;
 			docs[token.definition.kind] = loaded.value;
@@ -189,6 +208,7 @@ export class ConversationViews {
 function advance(
 	id: ConversationId,
 	mount: Mount,
+	kinds: ReadonlySet<string>,
 	publication: CommitPublication,
 	context: Context,
 	report: (error: unknown) => void,
@@ -216,7 +236,7 @@ function advance(
 		}
 		if (change.type !== "document" || change.conversationId !== id) continue;
 		const kind = change.record.kind;
-		if (!MOUNTED_KINDS.has(kind) || change.record.key !== undefined) continue;
+		if (!kinds.has(kind) || change.record.key !== undefined) continue;
 		const path: NonEmptyPath = ["docs", kind];
 		const mounted = mount.docs.get(kind);
 		if (change.value === null) {
